@@ -20,7 +20,7 @@ MIN_CONTOUR_AREA = 500  # Minimum area in pixels for a valid UI element (lowered
 MAX_CONTOUR_AREA = 500000  # Maximum area to avoid detecting entire page
 OCR_PSM = 6  # Page segmentation mode: assume single uniform block
 ROI_PADDING = 10  # Pixels to add around bounding box for OCR
-LABEL_SEARCH_HEIGHT = 50  # Pixels above rectangle to search for labels
+LABEL_SEARCH_HEIGHT = 80  # Pixels above rectangle to search for labels (increased)
 
 
 def detect_fields(image_path: str) -> List[Dict]:
@@ -124,33 +124,80 @@ def detect_fields(image_path: str) -> List[Dict]:
     logger.debug(f"Found {len(rectangles)} valid rectangles after deduplication")
     
     # Now find text labels using OCR on the entire image
-    # Try multiple OCR strategies
+    # Try multiple OCR strategies with improved preprocessing
     text_regions = []
+    
+    # Preprocess image for better OCR - enhance contrast
+    # Create enhanced version for OCR
+    enhanced = cv2.convertScaleAbs(gray, alpha=1.5, beta=30)  # Increase contrast
+    _, binary_ocr = cv2.threshold(enhanced, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     
     try:
         # Strategy 1: OCR on full image with data output to get bounding boxes
-        ocr_data = pytesseract.image_to_data(gray, lang='eng', output_type=pytesseract.Output.DICT)
+        # Try multiple preprocessing approaches
+        ocr_images = [
+            enhanced,  # Enhanced contrast
+            binary_ocr,  # Binary threshold
+            gray  # Original grayscale
+        ]
         
-        for i in range(len(ocr_data['text'])):
-            text = ocr_data['text'][i].strip()
-            # Accept text with any confidence (hand-drawn text may have low confidence)
-            if text and len(text) > 0:
-                x_txt = ocr_data['left'][i]
-                y_txt = ocr_data['top'][i]
-                w_txt = ocr_data['width'][i]
-                h_txt = ocr_data['height'][i]
+        all_text_regions = {}
+        
+        for ocr_img in ocr_images:
+            try:
+                ocr_data = pytesseract.image_to_data(
+                    ocr_img, 
+                    lang='eng', 
+                    output_type=pytesseract.Output.DICT,
+                    config='--psm 6'  # Uniform block of text
+                )
                 
-                if w_txt > 0 and h_txt > 0:
-                    text_regions.append({
-                        'text': text,
-                        'bbox': (x_txt, y_txt, w_txt, h_txt)
-                    })
+                for i in range(len(ocr_data['text'])):
+                    text = ocr_data['text'][i].strip()
+                    conf = int(ocr_data['conf'][i]) if ocr_data['conf'][i] != '' else 0
+                    
+                    # Accept text with any confidence (hand-drawn text may have low confidence)
+                    if text and len(text) > 0 and text not in ['', ' ']:
+                        x_txt = ocr_data['left'][i]
+                        y_txt = ocr_data['top'][i]
+                        w_txt = ocr_data['width'][i]
+                        h_txt = ocr_data['height'][i]
+                        
+                        if w_txt > 0 and h_txt > 0:
+                            # Use position as key to deduplicate
+                            region_key = (x_txt // 10, y_txt // 10, w_txt // 10, h_txt // 10)
+                            
+                            # Keep best confidence version or longer text
+                            if region_key not in all_text_regions:
+                                all_text_regions[region_key] = {
+                                    'text': text,
+                                    'bbox': (x_txt, y_txt, w_txt, h_txt),
+                                    'conf': conf
+                                }
+                            else:
+                                # Update if better confidence or longer text
+                                existing = all_text_regions[region_key]
+                                if conf > existing['conf'] or len(text) > len(existing['text']):
+                                    all_text_regions[region_key] = {
+                                        'text': text,
+                                        'bbox': (x_txt, y_txt, w_txt, h_txt),
+                                        'conf': conf
+                                    }
+            except Exception as e:
+                logger.debug(f"OCR on one preprocessing variant failed: {e}")
+                continue
+        
+        # Convert to list
+        text_regions = [
+            {'text': v['text'], 'bbox': v['bbox']}
+            for v in all_text_regions.values()
+        ]
+        
     except Exception as e:
         logger.warning(f"OCR data extraction failed: {e}, will try per-region OCR")
-        # Fallback: try simple OCR on regions above rectangles
         pass
     
-    logger.debug(f"Found {len(text_regions)} text regions from OCR")
+    logger.info(f"Found {len(text_regions)} text regions from OCR")
     
     # Match rectangles with labels above them
     fields = []
@@ -174,41 +221,78 @@ def detect_fields(image_path: str) -> List[Dict]:
             
             # Check if text is above the rectangle and horizontally aligned
             rect_center_x = rect_x + rect_w / 2
-            horizontal_overlap = abs(txt_center_x - rect_center_x) < max(rect_w / 2, txt_w / 2)
-            is_above = search_y_start <= txt_bottom_y <= search_y_end
+            rect_left = rect_x
+            rect_right = rect_x + rect_w
             
-            if horizontal_overlap and is_above:
-                distance = rect_y - txt_bottom_y
+            # More lenient horizontal matching - text can overlap or be within rectangle width
+            txt_left = txt_x
+            txt_right = txt_x + txt_w
+            horizontal_overlap = not (txt_right < rect_left or txt_left > rect_right)
+            
+            # Also check if text center is roughly aligned with rectangle center
+            center_aligned = abs(txt_center_x - rect_center_x) < max(rect_w, txt_w) * 1.5
+            
+            # Check if text is above the rectangle (more lenient range)
+            txt_center_y = txt_y + txt_h / 2
+            is_above = search_y_start <= txt_center_y <= search_y_end + 10
+            
+            if (horizontal_overlap or center_aligned) and is_above:
+                distance = abs(rect_y - txt_bottom_y)
                 if distance < best_distance:
                     best_distance = distance
                     best_match = text_region
                     label_text = text_region['text']
+                    logger.debug(f"Matched label '{label_text}' to rect at ({rect_x}, {rect_y})")
         
-        # Also try OCR directly on region above rectangle
+        # Also try OCR directly on region above rectangle with enhanced preprocessing
         if not label_text:
             try:
+                # Expand search area above rectangle
                 label_roi_y_start = max(0, rect_y - LABEL_SEARCH_HEIGHT)
-                label_roi_y_end = rect_y
-                label_roi_x_start = max(0, rect_x - ROI_PADDING)
-                label_roi_x_end = min(original_width, rect_x + rect_w + ROI_PADDING)
+                label_roi_y_end = rect_y + 10  # Include a bit of the rectangle
+                label_roi_x_start = max(0, rect_x - ROI_PADDING * 2)
+                label_roi_x_end = min(original_width, rect_x + rect_w + ROI_PADDING * 2)
                 
-                label_roi = gray[label_roi_y_start:label_roi_y_end, label_roi_x_start:label_roi_x_end]
+                label_roi_gray = gray[label_roi_y_start:label_roi_y_end, label_roi_x_start:label_roi_x_end]
                 
-                if label_roi.size > 100:
-                    # Try OCR with different PSM modes
-                    for psm_mode in [7, 8, 6]:  # Try single line, single word, single block
-                        try:
-                            ocr_text = pytesseract.image_to_string(
-                                label_roi,
-                                lang='eng',
-                                config=f'--psm {psm_mode}'
-                            ).strip()
-                            
-                            if ocr_text and len(ocr_text) > 0:
-                                label_text = ocr_text
-                                break
-                        except:
-                            continue
+                if label_roi_gray.size > 100:
+                    # Preprocess ROI for better OCR
+                    # Enhance contrast
+                    enhanced_roi = cv2.convertScaleAbs(label_roi_gray, alpha=2.0, beta=40)
+                    # Apply threshold
+                    _, thresh_roi = cv2.threshold(enhanced_roi, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                    # Invert if needed (assume dark text on light background)
+                    if np.mean(thresh_roi) > 127:
+                        thresh_roi = cv2.bitwise_not(thresh_roi)
+                    
+                    # Try OCR with different PSM modes and preprocessing
+                    ocr_candidates = [enhanced_roi, thresh_roi, label_roi_gray]
+                    psm_modes = [7, 8, 6, 13]  # Single line, word, block, raw line
+                    
+                    for ocr_img in ocr_candidates:
+                        for psm_mode in psm_modes:
+                            try:
+                                ocr_text = pytesseract.image_to_string(
+                                    ocr_img,
+                                    lang='eng',
+                                    config=f'--psm {psm_mode}'
+                                ).strip()
+                                
+                                # Clean up OCR text
+                                ocr_text = ' '.join(ocr_text.split())  # Normalize whitespace
+                                
+                                if ocr_text and len(ocr_text) > 0 and len(ocr_text) < 100:
+                                    # Validate it looks like a label (not random noise)
+                                    if any(c.isalnum() for c in ocr_text):
+                                        label_text = ocr_text
+                                        logger.debug(f"Found label '{label_text}' above rect at ({rect_x}, {rect_y})")
+                                        break
+                            except Exception as e:
+                                logger.debug(f"OCR attempt failed: {e}")
+                                continue
+                        
+                        if label_text:
+                            break
             except Exception as e:
                 logger.debug(f"Label OCR failed for rect at ({rect_x}, {rect_y}): {e}")
         
@@ -233,6 +317,16 @@ def detect_fields(image_path: str) -> List[Dict]:
         # Create field entry even if we don't have text (user can edit later)
         if not label_text:
             label_text = f"field_{field_id}"
+            logger.debug(f"No label found for rect at ({rect_x}, {rect_y}), using generic name")
+        
+        # Clean and validate label text
+        label_text = label_text.strip()
+        # Remove common OCR artifacts
+        label_text = re.sub(r'[^\w\s-]', '', label_text)  # Keep only alphanumeric, spaces, hyphens
+        label_text = ' '.join(label_text.split())  # Normalize whitespace
+        
+        if not label_text or len(label_text) == 0:
+            label_text = f"field_{field_id}"
         
         # Create field entry
         suggested_name = sanitize_identifier(
@@ -240,6 +334,8 @@ def detect_fields(image_path: str) -> List[Dict]:
             fallback_prefix="field"
         )
         suggested_type = infer_field_type(label_text)
+        
+        logger.info(f"Field {field_id}: '{label_text}' -> {suggested_name} ({suggested_type}) at {rect_x},{rect_y}")
         
         fields.append({
             'id': field_id,
@@ -311,21 +407,28 @@ def infer_field_type(text: str) -> str:
     
     text_lower = text.lower().strip()
     
-    # Email detection
-    if '@' in text or 'email' in text_lower or 'e-mail' in text_lower:
+    # Email detection (more lenient, handle OCR errors)
+    email_patterns = ['@', 'email', 'e-mail', 'e mail', 'emall', 'emai1', 'emal']
+    if any(pattern in text_lower for pattern in email_patterns):
         return "EmailField"
     
-    # Password detection
-    if 'password' in text_lower or 'pass' in text_lower:
+    # Password detection (handle OCR errors)
+    password_patterns = ['password', 'pass', 'pwd', 'passw', 'passwor']
+    if any(pattern in text_lower for pattern in password_patterns):
         return "CharField"  # Will use password widget in forms
     
-    # Date detection
-    date_keywords = ['date', 'dob', 'birth', 'day', 'time', 'when']
+    # Date detection (more keywords, handle variations)
+    date_keywords = ['date', 'dob', 'birth', 'day', 'time', 'when', 'birthday', 'birth date']
     if any(keyword in text_lower for keyword in date_keywords):
         return "DateField"
     
-    # Number/integer detection
-    numeric_keywords = ['age', 'number', 'qty', 'quantity', 'count', 'num', 'int', 'integer']
+    # Phone detection
+    phone_patterns = ['phone', 'telephone', 'tel', 'mobile', 'cell', 'number']
+    if any(pattern in text_lower for pattern in phone_patterns) and 'phone' in text_lower or 'telephone' in text_lower:
+        return "CharField"  # Phone numbers are CharField
+    
+    # Number/integer detection (more keywords, handle variations)
+    numeric_keywords = ['age', 'number', 'qty', 'quantity', 'count', 'num', 'int', 'integer', 'numbr', 'numb']
     if any(keyword in text_lower for keyword in numeric_keywords):
         return "IntegerField"
     
@@ -338,12 +441,27 @@ def infer_field_type(text: str) -> str:
         return "FloatField"
     
     # Boolean detection (common patterns)
-    bool_keywords = ['yes', 'no', 'true', 'false', 'checkbox', 'check', 'agree']
+    bool_keywords = ['yes', 'no', 'true', 'false', 'checkbox', 'check', 'agree', 'confirm']
     if any(keyword in text_lower for keyword in bool_keywords):
         return "BooleanField"
     
-    # Long text detection (TextField)
-    if len(text) > 50 or '\n' in text or text_lower in ['description', 'notes', 'comment', 'message', 'text']:
+    # Name fields (common patterns)
+    name_patterns = ['name', 'first name', 'last name', 'full name', 'surname', 'fname', 'lname']
+    if any(pattern in text_lower for pattern in name_patterns):
+        return "CharField"
+    
+    # Address fields
+    address_patterns = ['address', 'street', 'city', 'zip', 'postal', 'location']
+    if any(pattern in text_lower for pattern in address_patterns):
+        return "CharField"
+    
+    # Long text detection (TextField) - check for common long text field names
+    long_text_keywords = ['description', 'notes', 'comment', 'message', 'text', 'bio', 'about', 'details', 'content']
+    if any(keyword in text_lower for keyword in long_text_keywords):
+        return "TextField"
+    
+    # Long text by length
+    if len(text) > 50 or '\n' in text:
         return "TextField"
     
     # Default to CharField
