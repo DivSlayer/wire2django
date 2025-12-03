@@ -15,11 +15,6 @@ instance/
 
 # Uploads
 uploads/
-*.jpg
-*.jpeg
-*.png
-*.gif
-*.bmp
 
 # IDE
 .vscode/
