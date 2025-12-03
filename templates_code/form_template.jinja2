@@ -1,0 +1,19 @@
+from django import forms
+from .models import {{ model_name }}
+
+
+class {{ model_name }}Form(forms.ModelForm):
+    class Meta:
+        model = {{ model_name }}
+        fields = [{% for field in fields %}'{{ field.name }}'{% if not loop.last %}, {% endif %}{% endfor %}]
+        widgets = {
+{% for field in fields %}
+            '{{ field.name }}': {% if field.is_password %}forms.PasswordInput(attrs={'class': 'form-control'}){% elif field.type == "TextField" %}forms.Textarea(attrs={'class': 'form-control', 'rows': 4}){% elif field.type == "DateField" %}forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}){% else %}forms.TextInput(attrs={'class': 'form-control'}){% endif %},
+{% endfor %}
+        }
+        labels = {
+{% for field in fields %}
+            '{{ field.name }}': '{{ field.name.replace("_", " ").title() }}',
+{% endfor %}
+        }
+

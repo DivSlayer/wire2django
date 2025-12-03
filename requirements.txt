@@ -1,0 +1,8 @@
+Flask==3.0.0
+opencv-python==4.8.1.78
+pytesseract==0.3.10
+Pillow==10.1.0
+Jinja2==3.1.2
+Werkzeug==3.0.1
+pytest==7.4.3
+

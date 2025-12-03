@@ -1,0 +1,58 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Wire2Django - Upload Wireframe</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Wire2Django</h1>
+            <p class="subtitle">Convert hand-drawn wireframes to Django code</p>
+        </header>
+        
+        <main>
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    <div class="messages">
+                        {% for message in messages %}
+                            <div class="message">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+            
+            <div class="upload-section">
+                <h2>Upload Your Wireframe</h2>
+                <form action="/upload" method="post" enctype="multipart/form-data" class="upload-form">
+                    <div class="form-group">
+                        <label for="file">Select Image File:</label>
+                        <input type="file" id="file" name="file" accept="image/*" required>
+                    </div>
+                    
+                    <button type="submit" class="btn-primary">Upload & Detect</button>
+                </form>
+            </div>
+            
+            <div class="tips-section">
+                <h3>Tips for Better Detection</h3>
+                <ul>
+                    <li>Use a dark pen on white paper or background</li>
+                    <li>Draw clear rectangular boxes for form fields</li>
+                    <li>Write labels clearly above or inside each box</li>
+                    <li>Keep labels in English</li>
+                    <li>Avoid excessive noise or clutter</li>
+                    <li>Ensure good lighting and contrast in your photo</li>
+                </ul>
+            </div>
+        </main>
+        
+        <footer>
+            <p>Wire2Django MVP - Generated code can be dropped into your Django app</p>
+        </footer>
+    </div>
+</body>
+</html>
+

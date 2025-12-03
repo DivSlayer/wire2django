@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Review Detected Fields - Wire2Django</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Review Detected Fields</h1>
+            <p class="subtitle">Edit field names and types before generating Django code</p>
+        </header>
+        
+        <main>
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    <div class="messages">
+                        {% for message in messages %}
+                            <div class="message">{{ message }}</div>
+                        {% endfor %}
+                    </div>
+                {% endif %}
+            {% endwith %}
+            
+            <div class="image-section">
+                <h2>Wireframe with Detected Fields</h2>
+                <div class="image-container">
+                    <img id="wireframe-image" src="/uploads/{{ filename }}" alt="Uploaded wireframe">
+                    <canvas id="overlay-canvas"></canvas>
+                </div>
+            </div>
+            
+            <div class="fields-section">
+                <h2>Detected Fields</h2>
+                <form action="/generate" method="post" id="review-form">
+                    <div class="fields-list">
+                        {% for field in fields %}
+                        <div class="field-item" data-field-id="{{ field.id }}">
+                            <div class="field-header">
+                                <span class="field-number">Field #{{ field.id }}</span>
+                                <span class="field-bbox">Box: ({{ field.bbox[0] }}, {{ field.bbox[1] }}, {{ field.bbox[2] }}, {{ field.bbox[3] }})</span>
+                            </div>
+                            
+                            <div class="form-row">
+                                <div class="form-group">
+                                    <label>Detected Text:</label>
+                                    <input type="text" value="{{ field.text }}" readonly class="readonly-field">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="field_name_{{ field.id }}">Field Name:</label>
+                                    <input type="text" 
+                                           id="field_name_{{ field.id }}" 
+                                           name="field_name" 
+                                           value="{{ field.suggested_name }}" 
+                                           required
+                                           pattern="[a-z0-9_]+"
+                                           title="Only lowercase letters, numbers, and underscores allowed">
+                                </div>
+                                
+                                <div class="form-group">
+                                    <label for="field_type_{{ field.id }}">Field Type:</label>
+                                    <select id="field_type_{{ field.id }}" name="field_type" required>
+                                        <option value="CharField" {% if field.suggested_type == "CharField" %}selected{% endif %}>CharField</option>
+                                        <option value="TextField" {% if field.suggested_type == "TextField" %}selected{% endif %}>TextField</option>
+                                        <option value="EmailField" {% if field.suggested_type == "EmailField" %}selected{% endif %}>EmailField</option>
+                                        <option value="IntegerField" {% if field.suggested_type == "IntegerField" %}selected{% endif %}>IntegerField</option>
+                                        <option value="FloatField" {% if field.suggested_type == "FloatField" %}selected{% endif %}>FloatField</option>
+                                        <option value="DateField" {% if field.suggested_type == "DateField" %}selected{% endif %}>DateField</option>
+                                        <option value="BooleanField" {% if field.suggested_type == "BooleanField" %}selected{% endif %}>BooleanField</option>
+                                    </select>
+                                </div>
+                            </div>
+                            
+                            <input type="hidden" name="field_id" value="{{ field.id }}">
+                        </div>
+                        {% endfor %}
+                    </div>
+                    
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary">Generate Django Code & Download ZIP</button>
+                        <a href="{{ url_for('index') }}" class="btn-secondary">Discard & Start Over</a>
+                    </div>
+                </form>
+            </div>
+        </main>
+        
+        <footer>
+            <p>Review your fields carefully before generating code</p>
+        </footer>
+    </div>
+    
+    <script>
+        // Draw overlay rectangles on canvas
+        document.addEventListener('DOMContentLoaded', function() {
+            const img = document.getElementById('wireframe-image');
+            const canvas = document.getElementById('overlay-canvas');
+            const ctx = canvas.getContext('2d');
+            
+            // Wait for image to load
+            img.onload = function() {
+                // Set canvas size to match image
+                canvas.width = img.width;
+                canvas.height = img.height;
+                
+                // Draw rectangles from field data
+                const fields = {{ fields | tojson }};
+                
+                ctx.strokeStyle = '#ff0000';
+                ctx.lineWidth = 2;
+                
+                fields.forEach(function(field) {
+                    const bbox = field.bbox;
+                    ctx.strokeRect(bbox[0], bbox[1], bbox[2], bbox[3]);
+                    
+                    // Optional: Draw field ID number
+                    ctx.fillStyle = '#ff0000';
+                    ctx.font = '12px Arial';
+                    ctx.fillText('#' + field.id, bbox[0] + 5, bbox[1] + 15);
+                });
+            };
+            
+            // If image already loaded
+            if (img.complete) {
+                img.onload();
+            }
+        });
+        
+        // Validate field names on input
+        document.querySelectorAll('input[name="field_name"]').forEach(function(input) {
+            input.addEventListener('input', function() {
+                // Convert to lowercase and replace invalid chars
+                let value = this.value.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+                // Remove leading digits/underscores
+                value = value.replace(/^[\d_]+/, '');
+                this.value = value;
+            });
+        });
+    </script>
+</body>
+</html>
+
